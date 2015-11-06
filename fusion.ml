@@ -1,0 +1,1074 @@
+(* ========================================================================= *)
+(* Complete HOL kernel of types, terms and theorems.                         *)
+(*                                                                           *)
+(*       John Harrison, University of Cambridge Computer Laboratory          *)
+(*                                                                           *)
+(*            (c) Copyright, University of Cambridge 1998                    *)
+(*              (c) Copyright, John Harrison 1998-2007                       *)
+(* ========================================================================= *)
+
+needs "lib.ml";;
+
+module type Hol_kernel =
+  sig
+      type hol_type = private
+        Tyvar of string
+      | Tyapp of string *  hol_type list
+
+      type term = private
+        Var of string * hol_type
+      | Const of string * hol_type
+      | Comb of term * term
+      | Abs of term * term
+
+      type thm
+
+      type proof =
+              Axiom_proof
+            | Lem_proof
+            | Ilemma_proof of term list * term list * term list * int (*axiom - clemma - ilemma - size *)
+            | Clemma_proof of term list * term list * term list * int
+            | Refl_proof of term
+            | Sym_proof of thm
+            | Trans_proof of thm * thm
+            | Mk_comb_proof of thm * thm
+            | Abs_proof of term * thm
+            | Beta_conv_proof of term
+            | Assume_proof of term
+            | Eq_mp_proof of thm * thm
+            | Deduct_antisym_rule_proof of thm * thm
+            | Prove_hyp_proof of thm * thm
+            | Subst_proof of ((hol_type * hol_type) list * (term * term) list) * thm
+            | New_basic_definition_proof of string
+            | New_basic_type_definition_proof of bool * string
+            | Define_const_list_proof of string
+            | Mp_proof of thm * thm 
+            | Disch_proof of term * thm 
+            | Gen_proof of term * thm
+            | Spec_proof of term * thm
+
+      val types: unit -> (string * int)list
+      val get_type_arity : string -> int
+      val new_type : (string * int) -> unit
+      val mk_type: (string * hol_type list) -> hol_type
+      val mk_vartype : string -> hol_type
+      val dest_type : hol_type -> (string * hol_type list)
+      val dest_vartype : hol_type -> string
+      val is_type : hol_type -> bool
+      val is_vartype : hol_type -> bool
+      val tyvars : hol_type -> hol_type list
+      val type_subst : (hol_type * hol_type)list -> hol_type -> hol_type
+      val bool_ty : hol_type
+      val aty : hol_type
+
+      val constants : unit -> (string * hol_type) list
+      val get_const_type : string -> hol_type
+      val new_constant : string * hol_type -> unit
+      val type_of : term -> hol_type
+      val alphaorder : term -> term -> int
+      val is_var : term -> bool
+      val is_const : term -> bool
+      val is_abs : term -> bool
+      val is_comb : term -> bool
+      val mk_var : string * hol_type -> term
+      val mk_const : string * (hol_type * hol_type) list -> term
+      val mk_abs : term * term -> term
+      val mk_comb : term * term -> term
+     
+      val dest_var : term -> string * hol_type
+      val dest_const : term -> string * hol_type
+      val dest_comb : term -> term * term
+      val dest_abs : term -> term * term
+      val frees : term -> term list
+      val freesl : term list -> term list
+      val freesin : term list -> term -> bool
+      val vfree_in : term -> term -> bool
+      val type_vars_in_term : term -> hol_type list
+      val variant : term list -> term -> term
+      val vsubst : (term * term) list -> term -> term
+      val inst : (hol_type * hol_type) list -> term -> term
+      val rand: term -> term
+      val rator: term -> term
+      val dest_eq: term -> term * term
+
+      val dest_thm : thm -> term list * term
+      val hyp : thm -> term list
+      val concl : thm -> term
+      val REFL : term -> thm
+      val TRANS : thm -> thm -> thm
+      val MK_COMB : thm * thm -> thm
+      val ABS : term -> thm -> thm
+      val BETA : term -> thm
+      val ASSUME : term -> thm
+      val EQ_MP : thm -> thm -> thm
+      val DEDUCT_ANTISYM_RULE : thm -> thm -> thm
+      val INST_TYPE : (hol_type * hol_type) list -> thm -> thm
+      val INST : (term * term) list -> thm -> thm
+      val axioms : unit -> thm list
+      val new_axiom : term -> thm
+      val definitions : unit -> thm list
+      val new_basic_definition : term -> thm
+      val new_basic_type_definition :
+              string -> string * string -> thm -> thm * thm
+
+      val disable_proof_logging : unit -> unit
+      val read_proof : thm -> proof
+      val replace_proof : thm -> proof -> unit
+      val delete_proof : thm -> unit
+      val obtain_axiom : thm -> term list 
+      val obtain_Ilemma : thm -> term list
+      val obtain_Clemma : thm -> term list
+      val get_proof_size : thm -> int
+      val obtain_proof_size : thm -> int 
+      val detect_LEM : thm -> bool
+      val construct_thm : term list -> term -> proof -> thm (*the name "mk_thm" is used in d *)
+      (* imp *)
+      val MP : thm -> thm -> thm
+      val DISCH: term -> thm -> thm
+      (* univ *)
+      val SPEC : term -> thm -> thm
+      val GEN : term -> thm -> thm
+
+
+end;;
+
+(* ------------------------------------------------------------------------- *)
+(* This is the implementation of those primitives.                           *)
+(* ------------------------------------------------------------------------- *)
+
+module Hol : Hol_kernel = struct
+
+  type hol_type = Tyvar of string
+                | Tyapp of string *  hol_type list
+
+  type term = Var of string * hol_type
+            | Const of string * hol_type
+            | Comb of term * term
+            | Abs of term * term
+
+  type thm = Sequent of (term list * term) * proof ref
+
+  and proof = Axiom_proof
+            | Lem_proof
+            | Ilemma_proof of term list * term list * term list * int
+            | Clemma_proof of term list * term list * term list * int
+            | Refl_proof of term
+            | Sym_proof of thm
+            | Trans_proof of thm * thm
+            | Mk_comb_proof of thm * thm
+            | Abs_proof of term * thm
+            | Beta_conv_proof of term
+            | Assume_proof of term
+            | Eq_mp_proof of thm * thm
+            | Deduct_antisym_rule_proof of thm * thm
+            | Prove_hyp_proof of thm * thm
+            | Subst_proof of ((hol_type * hol_type) list * (term * term) list) * thm
+            | New_basic_definition_proof of string
+            | New_basic_type_definition_proof of bool * string
+            | Define_const_list_proof of string
+            | Mp_proof of thm * thm 
+            | Disch_proof of term * thm 
+            | Gen_proof of term * thm
+            | Spec_proof of term * thm
+
+(* ------------------------------------------------------------------------- *)
+(* List of current type constants with their arities.                        *)
+(*                                                                           *)
+(* Initially we just have the boolean type and the function space            *)
+(* constructor. Later on we add as primitive the type of individuals.        *)
+(* All other new types result from definitional extension.                   *)
+(* ------------------------------------------------------------------------- *)
+
+  let the_type_constants = ref ["bool",0; "fun",2]
+
+(* ------------------------------------------------------------------------- *)
+(* Return all the defined types.                                             *)
+(* ------------------------------------------------------------------------- *)
+
+  let types() = !the_type_constants
+
+(* ------------------------------------------------------------------------- *)
+(* Lookup function for type constants. Returns arity if it succeeds.         *)
+(* ------------------------------------------------------------------------- *)
+
+  let get_type_arity s = assoc s (!the_type_constants)
+
+(* ------------------------------------------------------------------------- *)
+(* Declare a new type.                                                       *)
+(* ------------------------------------------------------------------------- *)
+
+  let new_type(name,arity) =
+    if can get_type_arity name then
+      failwith ("new_type: type "^name^" has already been declared")
+    else the_type_constants := (name,arity)::(!the_type_constants)
+
+(* ------------------------------------------------------------------------- *)
+(* Basic type constructors.                                                  *)
+(* ------------------------------------------------------------------------- *)
+
+  let mk_type(tyop,args) =
+    let arity = try get_type_arity tyop with Failure _ ->
+      failwith ("mk_type: type "^tyop^" has not been defined") in
+    if arity = length args then
+      Tyapp(tyop,args)
+    else failwith ("mk_type: wrong number of arguments to "^tyop)
+
+  let mk_vartype v = Tyvar(v)
+
+(* ------------------------------------------------------------------------- *)
+(* Basic type destructors.                                                   *)
+(* ------------------------------------------------------------------------- *)
+
+  let dest_type =
+    function
+        (Tyapp (s,ty)) -> s,ty
+      | (Tyvar _) -> failwith "dest_type: type variable not a constructor"
+
+  let dest_vartype =
+    function
+        (Tyapp(_,_)) -> failwith "dest_vartype: type constructor not a variable"
+      | (Tyvar s) -> s
+
+(* ------------------------------------------------------------------------- *)
+(* Basic type discriminators.                                                *)
+(* ------------------------------------------------------------------------- *)
+
+  let is_type = can dest_type
+
+  let is_vartype = can dest_vartype
+
+(* ------------------------------------------------------------------------- *)
+(* Return the type variables in a type and in a list of types.               *)
+(* ------------------------------------------------------------------------- *)
+
+  let rec tyvars =
+      function
+          (Tyapp(_,args)) -> itlist (union o tyvars) args []
+        | (Tyvar v as tv) -> [tv]
+
+(* ------------------------------------------------------------------------- *)
+(* Substitute types for type variables.                                      *)
+(*                                                                           *)
+(* NB: non-variables in subst list are just ignored (a check would be        *)
+(* repeated many times), as are repetitions (first possibility is taken).    *)
+(* ------------------------------------------------------------------------- *)
+
+  let rec type_subst i ty =
+    match ty with
+      Tyapp(tycon,args) ->
+          let args' = qmap (type_subst i) args in
+          if args' == args then ty else Tyapp(tycon,args')
+      | _ -> rev_assocd ty i ty
+
+  let bool_ty = Tyapp("bool",[])
+
+  let aty = Tyvar "A"
+
+(* ------------------------------------------------------------------------- *)
+(* List of term constants and their types.                                   *)
+(*                                                                           *)
+(* We begin with just equality (over all types). Later, the Hilbert choice   *)
+(* operator is added. All other new constants are defined.                   *)
+(* ------------------------------------------------------------------------- *)
+
+  let the_term_constants =
+     ref ["=",Tyapp("fun",[aty;Tyapp("fun",[aty;bool_ty])]);
+     "==>", Tyapp("fun",[bool_ty;Tyapp("fun", [bool_ty; bool_ty])]);
+     "!", Tyapp("fun", [Tyapp("fun", [aty; bool_ty]); bool_ty])]
+
+
+(* ------------------------------------------------------------------------- *)
+(* Return all the defined constants with generic types.                      *)
+(* ------------------------------------------------------------------------- *)
+
+  let constants() = !the_term_constants
+
+(* ------------------------------------------------------------------------- *)
+(* Gets type of constant if it succeeds.                                     *)
+(* ------------------------------------------------------------------------- *)
+
+  let get_const_type s = assoc s (!the_term_constants)
+
+(* ------------------------------------------------------------------------- *)
+(* Declare a new constant.                                                   *)
+(* ------------------------------------------------------------------------- *)
+
+  let new_constant(name,ty) =
+    if can get_const_type name then
+      failwith ("new_constant: constant "^name^" has already been declared")
+    else the_term_constants := (name,ty)::(!the_term_constants)
+
+(* ------------------------------------------------------------------------- *)
+(* Finds the type of a term (assumes it is well-typed).                      *)
+(* ------------------------------------------------------------------------- *)
+
+  let rec type_of tm =
+    match tm with
+      Var(_,ty) -> ty
+    | Const(_,ty) -> ty
+    | Comb(s,_) -> (match type_of s with Tyapp("fun",[dty;rty]) -> rty)
+    | Abs(Var(_,ty),t) -> Tyapp("fun",[ty;type_of t])
+
+(* ------------------------------------------------------------------------- *)
+(* Primitive discriminators.                                                 *)
+(* ------------------------------------------------------------------------- *)
+
+  let is_var = function (Var(_,_)) -> true | _ -> false
+
+  let is_const = function (Const(_,_)) -> true | _ -> false
+
+  let is_abs = function (Abs(_,_)) -> true | _ -> false
+
+  let is_comb = function (Comb(_,_)) -> true | _ -> false
+
+(* ------------------------------------------------------------------------- *)
+(* Primitive constructors.                                                   *)
+(* ------------------------------------------------------------------------- *)
+
+  let mk_var(v,ty) = Var(v,ty)
+
+  let mk_const(name,theta) =
+    let uty = try get_const_type name with Failure _ ->
+      failwith "mk_const: not a constant name" in
+    Const(name,type_subst theta uty)
+
+  let mk_abs(bvar,bod) =
+    match bvar with
+      Var(_,_) -> Abs(bvar,bod)
+    | _ -> failwith "mk_abs: not a variable"
+
+  let mk_comb(f,a) =
+    match type_of f with
+      Tyapp("fun",[ty;_]) when Pervasives.compare ty (type_of a) = 0
+        -> Comb(f,a)
+    | _ -> failwith "mk_comb: types do not agree"
+
+
+
+(* ------------------------------------------------------------------------- *)
+(* Primitive destructors.                                                    *)
+(* ------------------------------------------------------------------------- *)
+
+  let dest_var =
+    function (Var(s,ty)) -> s,ty | _ -> failwith "dest_var: not a variable"
+
+  let dest_const =
+    function (Const(s,ty)) -> s,ty | _ -> failwith "dest_const: not a constant"
+
+  let dest_comb =
+    function (Comb(f,x)) -> f,x | _ -> failwith "dest_comb: not a combination"
+
+  let dest_abs =
+    function (Abs(v,b)) -> v,b | _ -> failwith "dest_abs: not an abstraction"
+
+(* ------------------------------------------------------------------------- *)
+(* Finds the variables free in a term (list of terms).                       *)
+(* ------------------------------------------------------------------------- *)
+
+  let rec frees tm =
+    match tm with
+      Var(_,_) -> [tm]
+    | Const(_,_) -> []
+    | Abs(bv,bod) -> subtract (frees bod) [bv]
+    | Comb(s,t) -> union (frees s) (frees t)
+
+  let freesl tml = itlist (union o frees) tml []
+
+(* ------------------------------------------------------------------------- *)
+(* Whether all free variables in a term appear in a list.                    *)
+(* ------------------------------------------------------------------------- *)
+
+  let rec freesin acc tm =
+    match tm with
+      Var(_,_) -> mem tm acc
+    | Const(_,_) -> true
+    | Abs(bv,bod) -> freesin (bv::acc) bod
+    | Comb(s,t) -> freesin acc s & freesin acc t
+
+(* ------------------------------------------------------------------------- *)
+(* Whether a variable (or constant in fact) is free in a term.               *)
+(* ------------------------------------------------------------------------- *)
+
+  let rec vfree_in v tm =
+    match tm with
+      Abs(bv,bod) -> v <> bv & vfree_in v bod
+    | Comb(s,t) -> vfree_in v s or vfree_in v t
+    | _ -> Pervasives.compare tm v = 0
+
+(* ------------------------------------------------------------------------- *)
+(* Finds the type variables (free) in a term.                                *)
+(* ------------------------------------------------------------------------- *)
+
+  let rec type_vars_in_term tm =
+    match tm with
+      Var(_,ty)        -> tyvars ty
+    | Const(_,ty)      -> tyvars ty
+    | Comb(s,t)        -> union (type_vars_in_term s) (type_vars_in_term t)
+    | Abs(Var(_,ty),t) -> union (tyvars ty) (type_vars_in_term t)
+
+(* ------------------------------------------------------------------------- *)
+(* For name-carrying syntax, we need this early.                             *)
+(* ------------------------------------------------------------------------- *)
+
+  let rec variant avoid v =
+    if not(exists (vfree_in v) avoid) then v else
+    match v with
+      Var(s,ty) -> variant avoid (Var(s^"'",ty))
+    | _ -> failwith "variant: not a variable"
+
+(* ------------------------------------------------------------------------- *)
+(* Substitution primitive (substitution for variables only!)                 *)
+(* ------------------------------------------------------------------------- *)
+
+  let vsubst =
+    let rec vsubst ilist tm =
+      match tm with
+        Var(_,_) -> rev_assocd tm ilist tm
+      | Const(_,_) -> tm
+      | Comb(s,t) -> let s' = vsubst ilist s and t' = vsubst ilist t in
+                     if s' == s & t' == t then tm else Comb(s',t')
+      | Abs(v,s) -> let ilist' = filter (fun (t,x) -> x <> v) ilist in
+                    if ilist' = [] then tm else
+                    let s' = vsubst ilist' s in
+                    if s' == s then tm else
+                    if exists (fun (t,x) -> vfree_in v t & vfree_in x s) ilist'
+                    then let v' = variant [s'] v in
+                         Abs(v',vsubst ((v',v)::ilist') s)
+                    else Abs(v,s') in
+    fun theta ->
+      if theta = [] then (fun tm -> tm) else
+      if forall (function (t,Var(_,y)) -> Pervasives.compare (type_of t) y = 0
+                        | _ -> false) theta
+      then vsubst theta else failwith "vsubst: Bad substitution list"
+
+(* ------------------------------------------------------------------------- *)
+(* Type instantiation primitive.                                             *)
+(* ------------------------------------------------------------------------- *)
+
+  exception Clash of term
+
+  let inst =
+    let rec inst env tyin tm =
+      match tm with
+        Var(n,ty)   -> let ty' = type_subst tyin ty in
+                       let tm' = if ty' == ty then tm else Var(n,ty') in
+                       if Pervasives.compare (rev_assocd tm' env tm) tm = 0
+                       then tm'
+                       else raise (Clash tm')
+      | Const(c,ty) -> let ty' = type_subst tyin ty in
+                       if ty' == ty then tm else Const(c,ty')
+      | Comb(f,x)   -> let f' = inst env tyin f and x' = inst env tyin x in
+                       if f' == f & x' == x then tm else Comb(f',x')
+      | Abs(y,t)    -> let y' = inst [] tyin y in
+                       let env' = (y,y')::env in
+                       try let t' = inst env' tyin t in
+                           if y' == y & t' == t then tm else Abs(y',t')
+                       with (Clash(w') as ex) ->
+                       if w' <> y' then raise ex else
+                       let ifrees = map (inst [] tyin) (frees t) in
+                       let y'' = variant ifrees y' in
+                       let z = Var(fst(dest_var y''),snd(dest_var y)) in
+                       inst env tyin (Abs(z,vsubst[z,y] t)) in
+    fun tyin -> if tyin = [] then fun tm -> tm else inst [] tyin
+
+(* ------------------------------------------------------------------------- *)
+(* A few bits of general derived syntax.                                     *)
+(* ------------------------------------------------------------------------- *)
+
+  let rator tm =
+    match tm with
+      Comb(l,r) -> l
+    | _ -> failwith "rator: Not a combination"
+
+  let rand tm =
+    match tm with
+      Comb(l,r) -> r
+    | _ -> failwith "rand: Not a combination"
+
+(* ------------------------------------------------------------------------- *)
+(* Syntax operations for equations.                                          *)
+(* ------------------------------------------------------------------------- *)
+
+  let safe_mk_eq l r =
+    let ty = type_of l in
+    Comb(Comb(Const("=",Tyapp("fun",[ty;Tyapp("fun",[ty;bool_ty])])),l),r)
+
+  let dest_eq tm =
+    match tm with
+      Comb(Comb(Const("=",_),l),r) -> l,r
+    | _ -> failwith "dest_eq"
+
+(* ------------------------------------------------------------------------- *)
+(* Useful to have term union modulo alpha-conversion for assumption lists.   *)
+(* ------------------------------------------------------------------------- *)
+
+  let rec ordav env x1 x2 =
+    match env with
+      [] -> Pervasives.compare x1 x2
+    | (t1,t2)::oenv -> if Pervasives.compare x1 t1 = 0
+                       then if Pervasives.compare x2 t2 = 0
+                            then 0 else -1
+                       else if Pervasives.compare x2 t2 = 0 then 1
+                       else ordav oenv x1 x2
+
+  let rec orda env tm1 tm2 =
+    if tm1 == tm2 & forall (fun (x,y) -> x = y) env then 0 else
+    match (tm1,tm2) with
+      Var(x1,ty1),Var(x2,ty2) -> ordav env tm1 tm2
+    | Const(x1,ty1),Const(x2,ty2) -> Pervasives.compare tm1 tm2
+    | Comb(s1,t1),Comb(s2,t2) ->
+          let c = orda env s1 s2 in if c <> 0 then c else orda env t1 t2
+    | Abs(Var(_,ty1) as x1,t1),Abs(Var(_,ty2) as x2,t2) ->
+          let c = Pervasives.compare ty1 ty2 in
+          if c <> 0 then c else orda ((x1,x2)::env) t1 t2
+    | Const(_,_),_ -> -1
+    | _,Const(_,_) -> 1
+    | Var(_,_),_ -> -1
+    | _,Var(_,_) -> 1
+    | Comb(_,_),_ -> -1
+    | _,Comb(_,_) -> 1
+
+  let alphaorder = orda []
+
+  let rec term_union l1 l2 =
+    match (l1,l2) with
+      ([],l2) -> l2
+    | (l1,[]) -> l1
+    | (h1::t1,h2::t2) -> let c = alphaorder h1 h2 in
+                         if c = 0 then h1::(term_union t1 t2)
+                         else if c < 0 then h1::(term_union t1 l2)
+                         else h2::(term_union l1 t2)
+
+  let rec term_remove t l =
+    match l with
+      s::ss -> let c = alphaorder t s in
+               if c > 0 then
+                 let ss' = term_remove t ss in
+                 if ss' == ss then l else s::ss'
+               else if c = 0 then ss else l
+    | [] -> l
+
+  let rec term_image f l =
+    match l with
+      h::t -> let h' = f h and t' = term_image f t in
+              if h' == h & t' == t then l else term_union [h'] t'
+    | [] -> l
+
+(* ------------------------------------------------------------------------- *)
+(* Basic theorem destructors.                                                *)
+(* ------------------------------------------------------------------------- *)
+
+  let dest_thm (Sequent((asl,c),_)) = (asl,c)
+
+  let hyp (Sequent((asl,c),_)) = asl
+
+  let concl (Sequent((asl,c),_)) = c
+
+
+(* ------------------------------------------------------------------------- *)
+(* Proof logging primitives.                                                 *)
+(* ------------------------------------------------------------------------- *)
+
+  let proof_logging_enabled = ref true
+
+  let disable_proof_logging () = let () = proof_logging_enabled := false in ()
+
+  let store_proof =
+      let null_proof = ref Axiom_proof in
+      fun p -> if !proof_logging_enabled then ref p else null_proof
+
+  let read_proof (Sequent (_,rp)) = !rp
+
+  let replace_proof (Sequent (_,rp)) p =
+      if not (!proof_logging_enabled) then () else
+      let () = rp := p in ()
+
+
+(* detect law of excluded middle or other classical lemmas *)
+let rec detect_LEM thm =
+  let p = read_proof thm in 
+  match p with 
+  | Lem_proof | Clemma_proof (_) -> true 
+  | Refl_proof (_) | Beta_conv_proof (_) | Assume_proof (_) | Define_const_list_proof (_)
+  | New_basic_definition_proof (_) | New_basic_type_definition_proof (_) | Axiom_proof 
+  | Ilemma_proof(_) -> false 
+  | Sym_proof(t)  
+      -> detect_LEM (t) 
+  | Trans_proof(t1, t2) | Mk_comb_proof (t1, t2) | Eq_mp_proof(t1, t2) | Deduct_antisym_rule_proof(t1 , t2)| 
+   Prove_hyp_proof(t1, t2) | Mp_proof(t1, t2) 
+    ->  if (detect_LEM t1) then true else (detect_LEM t2) 
+  | Abs_proof(term1, t1) | Disch_proof (term1, t1) | Gen_proof (term1, t1) | Spec_proof (term1 ,t1) 
+    -> detect_LEM(t1) 
+  |Subst_proof(_, t) 
+    -> (detect_LEM t);;
+
+module Term_set = Set.Make (
+  struct
+      type t = term
+      let compare t1 t2 = alphaorder t1 t2
+    end);;
+
+
+
+let get_proof_size thm = 
+  let m = ref Term_set.empty in 
+  let cl = ref Term_set.empty in 
+  let rec rec_get_size acc th = 
+    match read_proof th with 
+      Clemma_proof (axioms, clemmas, ilemmas, size)
+      | Ilemma_proof (axioms, clemmas, ilemmas, size) 
+        -> 1 + acc
+      | Lem_proof 
+      | Refl_proof (_) 
+      | Beta_conv_proof (_) 
+      | Assume_proof (_) 
+      | Define_const_list_proof (_)
+      | New_basic_definition_proof (_) 
+      | New_basic_type_definition_proof (_) 
+      | Axiom_proof
+        -> 1 + acc
+      | Sym_proof(t1) 
+        ->  rec_get_size (1 + acc) t1
+      | Trans_proof(t1, t2) 
+      | Mk_comb_proof (t1, t2)
+      | Eq_mp_proof(t1, t2) 
+      | Deduct_antisym_rule_proof(t1 , t2)
+      | Prove_hyp_proof(t1, t2) 
+      | Mp_proof(t1, t2) 
+        -> rec_get_size (rec_get_size (1 + acc) t1) t2
+      | Abs_proof(term1, t1)
+      | Disch_proof (term1, t1)
+      | Gen_proof (term1, t1) 
+      | Spec_proof (term1 ,t1) 
+        -> rec_get_size (1 + acc) t1
+      | Subst_proof(l, t1) 
+        -> rec_get_size (1 + acc) t1
+    in 
+  rec_get_size 0 thm;;
+
+
+
+let get_Clemma thm = 
+  let m = ref Term_set.empty in 
+  let cl = ref Term_set.empty in 
+  let rec rec_get_Clemma th = 
+    match read_proof th with 
+      Clemma_proof (axioms, clemmas, ilemmas, size) -> 
+        if not (Term_set.mem (concl th) !m) then 
+          m := Term_set.add (concl th) !m;
+          let f x = 
+            cl := Term_set.add x !cl in 
+          List.iter f ((concl th)::clemmas) 
+      | Lem_proof 
+      | Refl_proof (_) 
+      | Beta_conv_proof (_) 
+      | Assume_proof (_) 
+      | Define_const_list_proof (_)
+      | New_basic_definition_proof (_) 
+      | New_basic_type_definition_proof (_) 
+      | Axiom_proof
+        -> ()
+      | Sym_proof(t1) -> rec_get_Clemma t1
+
+      | Ilemma_proof (_) 
+        -> ()
+      | Trans_proof(t1, t2) 
+      | Mk_comb_proof (t1, t2)
+      | Eq_mp_proof(t1, t2) 
+      | Deduct_antisym_rule_proof(t1 , t2)
+      | Prove_hyp_proof(t1, t2) 
+      | Mp_proof(t1, t2) ->
+        rec_get_Clemma t1;
+        rec_get_Clemma t2 
+      | Abs_proof(term1, t1)
+      | Disch_proof (term1, t1)
+      | Gen_proof (term1, t1) 
+      | Spec_proof (term1 ,t1) ->
+        rec_get_Clemma t1
+
+      | Subst_proof(l, t1) ->
+        rec_get_Clemma t1 
+    in 
+  rec_get_Clemma thm;
+  Term_set.elements !cl;;
+
+
+
+let get_Ilemma thm = 
+  let m = ref Term_set.empty in 
+  let il = ref Term_set.empty in 
+  let rec rec_get_Ilemma  th = 
+    match read_proof th with 
+      Ilemma_proof (axioms, clemmas, ilemmas, size) -> 
+        if not (Term_set.mem (concl th) !m) then 
+          m := Term_set.add (concl th) !m;
+          let f x = 
+            il := Term_set.add x !il in 
+          List.iter f ((concl th)::ilemmas) 
+      | Lem_proof 
+      | Refl_proof (_) 
+      | Beta_conv_proof (_) 
+      | Assume_proof (_) 
+      | Define_const_list_proof (_)
+      | New_basic_definition_proof (_) 
+      | New_basic_type_definition_proof (_) 
+      | Axiom_proof
+        -> ()
+      | Sym_proof(t1) -> rec_get_Ilemma t1
+
+      | Clemma_proof (axioms, clemmas, ilemmas, size) ->
+        if not (Term_set.mem (concl th) !m) then 
+          m := Term_set.add (concl th) !m;
+          let f x = 
+            il := Term_set.add x !il in 
+          List.iter f ((concl th)::ilemmas) 
+
+      | Trans_proof(t1, t2) 
+      | Mk_comb_proof (t1, t2)
+      | Eq_mp_proof(t1, t2) 
+      | Deduct_antisym_rule_proof(t1 , t2)
+      | Prove_hyp_proof(t1, t2) 
+      | Mp_proof(t1, t2) ->
+        rec_get_Ilemma t1;
+        rec_get_Ilemma t2 
+
+      | Abs_proof(term1, t1)
+      | Disch_proof (term1, t1)
+      | Gen_proof (term1, t1) 
+      | Spec_proof (term1 ,t1) ->
+        rec_get_Ilemma t1
+
+      | Subst_proof(l, t1) ->
+        rec_get_Ilemma t1 
+  in 
+  rec_get_Ilemma thm;
+  Term_set.elements !il;;
+
+
+let get_axiom thm = 
+
+  let rec rec_get_axiom acc th = 
+    match read_proof th with 
+      Ilemma_proof (axioms, clemmas, ilemmas, size)
+      | Clemma_proof (axioms, clemmas, ilemmas, size) 
+        -> term_union acc axioms
+
+      | Lem_proof | Axiom_proof 
+      -> 
+      term_union [concl th] acc
+
+      | Refl_proof (_) 
+      | Beta_conv_proof (_) 
+      | Assume_proof (_) 
+      | Define_const_list_proof (_)
+      | New_basic_definition_proof (_) 
+      | New_basic_type_definition_proof (_) 
+        -> acc
+
+      | Sym_proof(t1) -> rec_get_axiom acc t1
+
+      | Trans_proof(t1, t2) 
+      | Mk_comb_proof (t1, t2)
+      | Eq_mp_proof(t1, t2) 
+      | Deduct_antisym_rule_proof(t1 , t2)
+      | Prove_hyp_proof(t1, t2) 
+      | Mp_proof(t1, t2) ->
+        let l1 = rec_get_axiom acc t1 in 
+        rec_get_axiom l1 t2 
+
+      | Abs_proof(term1, t1)
+      | Disch_proof (term1, t1)
+      | Gen_proof (term1, t1) 
+      | Spec_proof (term1 ,t1) ->
+        rec_get_axiom acc t1
+
+      | Subst_proof(l, t1) ->
+        rec_get_axiom acc t1 
+  in 
+  rec_get_axiom [] thm
+
+
+
+(* don't delete, just make them lemmas *)
+  let delete_proof th = 
+    let p = read_proof th in 
+    match p with 
+      Lem_proof -> ()
+      | Axiom_proof -> ()
+      | _ -> 
+        let ax = get_axiom th in 
+        let il = get_Ilemma th in 
+        let cl = get_Clemma th in 
+        let size = get_proof_size th in 
+        let c = Clemma_proof (ax, cl, il, size) in 
+        let i = Ilemma_proof (ax, cl, il, size) in 
+        if detect_LEM th then replace_proof th c
+        else replace_proof th i
+
+
+  let obtain_axiom th =
+    match read_proof th with 
+      Ilemma_proof(ax, cl, il, size)
+      | Clemma_proof(ax, cl, il, size)-> 
+      ax
+      | _ -> get_axiom th 
+
+  let obtain_Clemma th = 
+    match read_proof th with 
+      Ilemma_proof(ax, cl, il, size)
+      | Clemma_proof(ax, cl, il, size)-> 
+      cl
+      | _ -> get_Clemma th 
+
+  let obtain_Ilemma th = 
+    match read_proof th with 
+      Ilemma_proof(ax, cl, il, size)
+      | Clemma_proof(ax, cl, il, size)-> 
+      il
+      | _ -> get_Ilemma th
+
+  let obtain_proof_size th = 
+    match read_proof th with 
+      Ilemma_proof(ax, cl, il, size)
+      | Clemma_proof (ax, cl, il, size)
+       -> size 
+      | Axiom_proof | Lem_proof -> 1 
+      |_-> failwith "error in proof size"
+
+(* ------------------------------------------------------------------------- *)
+(* Basic equality properties; TRANS is derivable but included for efficiency *)
+(* ------------------------------------------------------------------------- *)
+
+  let REFL tm =
+    Sequent(([],safe_mk_eq tm tm), store_proof (Refl_proof tm))
+
+  let TRANS (Sequent((asl1,c1),_) as th1) (Sequent((asl2,c2),_) as th2) =
+    match (c1,c2) with
+      Comb((Comb(Const("=",_),_) as eql),m1),Comb(Comb(Const("=",_),m2),r)
+        when alphaorder m1 m2 = 0 -> Sequent((term_union asl1 asl2,Comb(eql,r)),
+                                             store_proof (Trans_proof (th1,th2)))
+    | _ -> failwith "TRANS"
+
+(* ------------------------------------------------------------------------- *)
+(* Congruence properties of equality.                                        *)
+(* ------------------------------------------------------------------------- *)
+
+  let MK_COMB((Sequent((asl1,c1),_) as th1), (Sequent((asl2,c2),_) as th2)) =
+     match (c1,c2) with
+       Comb(Comb(Const("=",_),l1),r1),Comb(Comb(Const("=",_),l2),r2) ->
+        (match type_of l1 with
+           Tyapp("fun",[ty;_]) when Pervasives.compare ty (type_of l2) = 0
+             -> Sequent((term_union asl1 asl2,
+                         safe_mk_eq (Comb(l1,l2)) (Comb(r1,r2))),
+                        store_proof (Mk_comb_proof (th1,th2)))
+         | _ -> failwith "MK_COMB: types do not agree")
+     | _ -> failwith "MK_COMB: not both equations"
+
+  let ABS v (Sequent((asl,c),_) as th) =
+    match (v,c) with
+      Var(_,_),Comb(Comb(Const("=",_),l),r) when not(exists (vfree_in v) asl)
+         -> Sequent((asl,safe_mk_eq (Abs(v,l)) (Abs(v,r))),
+                    store_proof (Abs_proof (v,th)))
+    | _ -> failwith "ABS";;
+
+(* ------------------------------------------------------------------------- *)
+(* Trivial case of lambda calculus beta-conversion.                          *)
+(* ------------------------------------------------------------------------- *)
+
+  let BETA tm =
+    match tm with
+      Comb(Abs(v,bod),arg) when Pervasives.compare arg v = 0
+        -> Sequent(([],safe_mk_eq tm bod), store_proof (Beta_conv_proof tm))
+    | _ -> failwith "BETA: not a trivial beta-redex"
+
+(* ------------------------------------------------------------------------- *)
+(* Rules connected with deduction.                                           *)
+(* ------------------------------------------------------------------------- *)
+
+  let ASSUME tm =
+    if Pervasives.compare (type_of tm) bool_ty = 0 then
+      Sequent(([tm],tm), store_proof (Assume_proof tm))
+    else failwith "ASSUME: not a proposition"
+
+  let EQ_MP (Sequent((asl1,eq),_) as th1) (Sequent((asl2,c),_) as th2) =
+    match eq with
+      Comb(Comb(Const("=",_),l),r) when alphaorder l c = 0
+        -> Sequent((term_union asl1 asl2,r),
+                   store_proof (Eq_mp_proof (th1,th2)))
+    | _ -> failwith "EQ_MP"
+
+  let DEDUCT_ANTISYM_RULE (Sequent((asl1,c1),_) as th1) (Sequent((asl2,c2),_) as th2) =
+    let asl1' = term_remove c2 asl1 and asl2' = term_remove c1 asl2 in
+    Sequent((term_union asl1' asl2',safe_mk_eq c1 c2),
+            store_proof (Deduct_antisym_rule_proof (th1,th2)))
+
+(* ------------------------------------------------------------------------- *)
+(* Type and term instantiation.                                              *)
+(* ------------------------------------------------------------------------- *)
+
+  let INST_TYPE theta (Sequent((asl,c),_) as th) =
+    let inst_fn = inst theta in
+    Sequent((term_image inst_fn asl,inst_fn c),
+            store_proof (Subst_proof ((theta,[]),th)))
+
+  let INST theta (Sequent((asl,c),_) as th) =
+    let inst_fun = vsubst theta in
+    Sequent((term_image inst_fun asl,inst_fun c),
+            store_proof (Subst_proof (([],theta),th)))
+
+(* ------------------------------------------------------------------------- *)
+(* Handling of axioms.                                                       *)
+(* ------------------------------------------------------------------------- *)
+
+  let the_axioms = ref ([]:thm list)
+
+  let axioms() = !the_axioms
+
+  let new_axiom tm =
+    if Pervasives.compare (type_of tm) bool_ty = 0 then
+      let th = Sequent(([],tm), store_proof Axiom_proof) in
+       (the_axioms := th::(!the_axioms); th)
+    else failwith "new_axiom: Not a proposition"
+
+(* ------------------------------------------------------------------------- *)
+(* Handling of (term) definitions.                                           *)
+(* ------------------------------------------------------------------------- *)
+
+  let the_definitions = ref ([]:thm list)
+
+  let definitions() = !the_definitions
+
+  let new_basic_definition tm =
+    match tm with
+      Comb(Comb(Const("=",_),Var(cname,ty)),r) ->
+        if not(freesin [] r) then failwith "new_definition: term not closed"
+        else if not (subset (type_vars_in_term r) (tyvars ty))
+        then failwith "new_definition: Type variables not reflected in constant"
+        else let c = new_constant(cname,ty); Const(cname,ty) in
+             let dth = Sequent(([],safe_mk_eq c r),
+                               store_proof (New_basic_definition_proof cname)) in
+             the_definitions := dth::(!the_definitions); dth
+    | _ -> failwith "new_basic_definition"
+
+(* ------------------------------------------------------------------------- *)
+(* Handling of type definitions.                                             *)
+(*                                                                           *)
+(* This function now involves no logical constants beyond equality.          *)
+(*                                                                           *)
+(*             |- P t                                                        *)
+(*    ---------------------------                                            *)
+(*        |- abs(rep a) = a                                                  *)
+(*     |- P r = (rep(abs r) = r)                                             *)
+(*                                                                           *)
+(* Where "abs" and "rep" are new constants with the nominated names.         *)
+(* ------------------------------------------------------------------------- *)
+
+  let new_basic_type_definition tyname (absname,repname) (Sequent((asl,c),_)) =
+    if exists (can get_const_type) [absname; repname] then
+      failwith "new_basic_type_definition: Constant(s) already in use" else
+    if not (asl = []) then
+      failwith "new_basic_type_definition: Assumptions in theorem" else
+    let P,x = try dest_comb c
+              with Failure _ ->
+                failwith "new_basic_type_definition: Not a combination" in
+    if not(freesin [] P) then
+      failwith "new_basic_type_definition: Predicate is not closed" else
+    let tyvars = sort (<=) (type_vars_in_term P) in
+    let _ = try new_type(tyname,length tyvars)
+            with Failure _ ->
+                failwith "new_basic_type_definition: Type already defined" in
+    let aty = Tyapp(tyname,tyvars)
+    and rty = type_of x in
+    let absty = Tyapp("fun",[rty;aty]) and repty = Tyapp("fun",[aty;rty]) in
+    let abs = (new_constant(absname,absty); Const(absname,absty))
+    and rep = (new_constant(repname,repty); Const(repname,repty)) in
+    let a = Var("a",aty) and r = Var("r",rty) in
+    Sequent(([],safe_mk_eq (Comb(abs,mk_comb(rep,a))) a),
+            store_proof (New_basic_type_definition_proof (true,tyname))),
+    Sequent(([],safe_mk_eq (Comb(P,r))
+                  (safe_mk_eq (mk_comb(rep,mk_comb(abs,r))) r)),
+            store_proof (New_basic_type_definition_proof (false,tyname)))
+
+(* ------------------------------------------------------------------------- *)
+(* Definitions of MP and DISCH.                                              *)
+(* ------------------------------------------------------------------------- *)
+
+  let MP (Sequent((asl1, c1),_) as th1) (Sequent((asl2, c2),_) as th2) =
+    match c1 with
+      Comb(Comb(Const("==>", _), l), r)  when alphaorder l c2 = 0
+        -> Sequent((term_union asl1 asl2, r), store_proof (Mp_proof (th1, th2)))
+    |_-> failwith "MP_mistake_of_concl"
+
+  let DISCH a th1 =
+    let Sequent((asl1, c1),_) = th1 in
+      let cl = Comb(Comb(Const("==>",Tyapp("fun",[bool_ty;Tyapp("fun",[bool_ty;bool_ty])])),a),c1) in  (*changed*)
+      let asl2 = term_remove a asl1 in
+        Sequent((asl2, cl), store_proof (Disch_proof (a, th1)))
+
+  (* ------------------------------------------------------------------------- *)
+  (* Rules for !                                                               *)
+  (* ------------------------------------------------------------------------- *)
+
+  let SPEC tm th =
+    let v = fst(dest_abs (rand (concl th))) in
+    let v_ty = snd (dest_var v) in
+    let t_ty = type_of tm in
+    let con = snd (dest_abs (rand (concl th))) in
+    if t_ty = v_ty then 
+      Sequent((hyp th, vsubst [tm, v] con), store_proof (Spec_proof (tm, th)))
+    else failwith "SPEC" (* TODO: check the type first here then remove the try*)
+(* to be further checked, I didn't use CONV_RULE which might be a problem here *)
+
+
+  let GEN x th =
+    (*if x is not free in th, then fail*)
+    if not (List.mem x (freesl (hyp th))) then
+    let tm = (mk_abs(x, (concl th))) in 
+    let ty = type_of tm in
+      Sequent((hyp th, Comb(Const("!",Tyapp("fun",[ty;bool_ty])),tm)), store_proof(Gen_proof (x, th))) (* changed*)
+    else failwith "GEN" ;;
+ 
+
+(* allow construction of Sequence/proofs during changing but may lead to errors *)
+ let construct_thm h c p = 
+    Sequent((h,c), store_proof p)
+
+
+
+end;;
+
+include Hol;;
+
+(* ------------------------------------------------------------------------- *)
+(* Stuff that didn't seem worth putting in.                                  *)
+(* ------------------------------------------------------------------------- *)
+
+let mk_fun_ty ty1 ty2 = mk_type("fun",[ty1; ty2]);;
+let bty = mk_vartype "B";;
+
+let is_eq tm =
+  match tm with
+    Comb(Comb(Const("=",_),_),_) -> true
+  | _ -> false;;
+
+let mk_eq =
+  let eq = mk_const("=",[]) in
+  fun (l,r) ->
+    try let ty = type_of l in
+        let eq_tm = inst [ty,aty] eq in
+        mk_comb(mk_comb(eq_tm,l),r)
+    with Failure _ -> failwith "mk_eq";;
+
+(* ------------------------------------------------------------------------- *)
+(* Tests for alpha-convertibility (equality ignoring names in abstractions). *)
+(* ------------------------------------------------------------------------- *)
+
+let aconv s t = alphaorder s t = 0;;
+
+(* ------------------------------------------------------------------------- *)
+(* Comparison function on theorems. Currently the same as equality, but      *)
+(* it's useful to separate because in the proof-recording version it isn't.  *)
+(* ------------------------------------------------------------------------- *)
+
+let equals_thm th th' = dest_thm th = dest_thm th';;
+

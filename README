@@ -1,0 +1,102 @@
+                              
+                              HOLALA
+
+**************************************************************************** 
+                           Robert White
+                              INRIA
+                        shuai.wang@inria.fr
+****************************************************************************
+
+HOLALA is an multi-kernel interactive theorem prover based on OpenTheory HOL. 
+It is as a result of the kernel hacking part of Robert White's internship at
+INRIA. His work is supervised by Gilles Dowek. Dr. Ali Assaf and Mr. Frederic 
+Gilbert has also helped a lot during this internship.
+
+*****************************************************************************
+
+To use different kernels, you can simply type
+	#use "holN.ml";;
+in OCaml Toplevel, where N is the No. of the kernel you want to load and N > 0.
+
+****************************************************************************
+
+OpenTheory Kernel:
+Simply use as #use "hol.ml"
+The original OpenTheory HOL kernel. Compared with HOL's kernel, instead of 
+forgetting about the proof tree and only remember the last sequent, Open 
+Theory HOL modified HOL Light's data structure (see fusion.ml) and created 
+functions to retrieve/manipulate/delete proof tree.
+
+Kernel 2:
+Instead of taking only polymorphic equality, it is possible to take one 
+additional polymorphic symbols, namely universal quantifier (!) and implication 
+(==>) as primative symbol. Also, by modifying the data structure of proofs and 
+introduce a type for detection of "law of excluded middle", we can distinguish 
+between classical proofs and constructive proofs. This is also the main kernel 
+of HOLALA.
+
+Kernel 3:
+Kernel 3 is similar as Kernel 2 but removed the additional feture of detection of
+"law of excluded middle" so the two axioms it is based on, namely axiom of selection
+and axiom of extensionality is detectable when retrieving axioms.
+
+Kernel 4:
+
+
+********************************************************************************
+                             Tutorial
+
+1) Detection of law of excluded middle. 
+Make sure you are in Kernel 2.
+The function "detect_LEM" gives true when it has excluded middle as one of its axioms
+
+2) To retrieve all the theorems exported by OpenTheory.
+You can do this in all kernels. 
+
+let all_exported = Export.list_the_exported_thms ();;
+
+Or
+
+let all_hol = snd (List.split (search []));;
+
+3) To get the axioms of a theorem:
+The function "get_axiom" would give you a list of axioms.
+Notice that in Kernel 2, 
+
+4) To get the operators of a theorem:
+The function "get_operator" would give you a list of operators.
+
+5) To get the measure the "size" of a proof, the following functions can help you.
+
+	5.1) "get_proof_size" would give you the size of proof counting each deductive 
+	step as 1 and each axiom rule also as one.
+	5.2) "get_proof_depth" would give you the size of the longest path in a proof tree.
+
+
+6) To write a package of thms to HTML files.
+You will need the function:
+"generate_package_htmls", which takes the following arguments:
+	packagename : the name of the package and will be the name of the .html file.
+	author : the name of the author for this package of theorems.
+	verifier : the name of the people who verified the proofs.
+	software : the proof checking software involved. To be connect by '+' symbol.
+	date : the date the proof checking process was completed.
+	comment : some comments
+	thms : a list of theorems and their names in string.
+You will get some files of the name and their
+
+7) To count the size of the theorems and the size of classical proofs and constructive 
+proofs.
+
+	7.1) "get_acc_size_compared" takes a list of theorems and their names and generate an
+	accumulation of the size of proofs and a count of classical v.s. constructive proofs.
+	7.2) "get_average_size_compared" takes a list of theorems and their names and get 
+	the average size of proofs instead.
+
+8)
+
+9) Export LEM as an axiom. Users can export LEM as an aximo itself. To do this, users will
+need to uncomment line 395 to line 402 of file opentheory/export.ml
+
+10) To export as a opentheoryX format (the article files can then be verified by HOLIDE2),
+simply uncomment line 439 to line 461 of opentheory/export.ml
