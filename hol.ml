@@ -211,4 +211,3 @@ loads "update_database.ml";;
 
 (* stop_logging();; *)
 
-(* loads "proofanalysis.ml";; *)
