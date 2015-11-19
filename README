@@ -7,19 +7,15 @@
                         shuai.wang@inria.fr
 ****************************************************************************
 
-HOLALA is an multi-kernel interactive theorem prover based on OpenTheory HOL. 
-It is as a result of the kernel hacking part of Robert White's internship at
-INRIA. His work is supervised by Gilles Dowek. Dr. Ali Assaf and Mr. Frederic 
-Gilbert has also helped a lot during this internship.
-
 To generate the article files. You need to uncommend the following lines in 
-hol.ml
+hol.ml:
 
 (* start_logging();; *)
+
 (* stop_logging();; *)
 
-Then you will get the article files in ./opentheory/articles/
+You will then get the article files in the directory ./opentheory/articles/
 
 ****************************************************************************
 
-HOLALA is portable with HOLIDE2x. 
+HOLALA is portable with HOLIDE2x (rather than Holide2). 
