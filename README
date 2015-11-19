@@ -19,3 +19,20 @@ You will then get the article files in the directory ./opentheory/articles/
 ****************************************************************************
 
 HOLALA is portable with HOLIDE2x (rather than Holide2). 
+
+****************************************************************************
+
+Below is a list of major changes compared with (OpentThoery's) HOL Light: 
+
+0) the kernel (fusion.ml) files has an extended kernel with the universal 
+	quantifier and implication as primitive symbol.
+
+1) the kernel takes a new proof logging (proof recording) method.
+
+2) some inference rules have been re-proved in bool.ml
+
+3) we erase the proof of law of excluded midle and take it as an axiom 
+	as in class.ml. Following that, FORALL_DEF and IMP_DEF were re-proven.
+
+4) proof exporting function now deals with extended inference rules as in 
+	opentheory/export.ml. 
